@@ -83,21 +83,16 @@ fun VideoPlayer(
         }
     }
 
-    //pagerState.settledPage表示当前Pager中完全 settled（静止）的页面索引
-    // pageIndex 表示当前视频组件所在的页面索引
-    //当两者相等时，说明当前视频页面处于用户可视状态
-    if (pagerState.settledPage == pageIndex) {
-        val exoPlayer = remember(context) {
-            ExoPlayer.Builder(context).build().apply {
-                //设置视频缩放模式为适应屏幕
-                videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
-                //设置循环模式为单个视频重复播放
-                repeatMode = Player.REPEAT_MODE_ONE
+
+    //预加载的页面范围：当前页面 - 1 到当前页面 + 1
+    if (pagerState.settledPage >= pageIndex - 1 && pagerState.settledPage <= pageIndex + 1) {
+        val exoPlayer = remember(video.videoLink) {
+            ExoPlayerPool.getPlayer(context, video.videoLink).apply {
                 //设置要播放的媒体资源
                 setMediaItem(MediaItem.fromUri(Uri.parse("asset:///videos/${video.videoLink}")))
-                //设置播放器准备就绪后自动开始播放
-                playWhenReady = true
-                //准备播放器
+                //设置播放器在当前页面自动开始播放
+                playWhenReady = pagerState.settledPage == pageIndex
+                //预加载
                 prepare()
                 addListener(object : Player.Listener {
                     //首帧渲染回调
@@ -121,7 +116,12 @@ fun VideoPlayer(
                         onVideoGoBackground()
                     }
 
-                    Lifecycle.Event.ON_START -> exoPlayer.play()
+                    Lifecycle.Event.ON_START -> {
+                        if (pagerState.settledPage == pageIndex) {
+                            exoPlayer.play()
+                        }
+                    }
+
                     else -> {}
                 }
             }
@@ -165,10 +165,23 @@ fun VideoPlayer(
         }), effect = {
             onDispose {
                 thumbnail = thumbnail.copy(second = true)
-                exoPlayer.release()
+                ExoPlayerPool.releasePlayer(video.videoLink, exoPlayer)
                 onVideoDispose()
             }
         })
+
+
+        // 在 ExoPlayer 初始化后添加页面状态监听
+        LaunchedEffect(pagerState.settledPage) {
+            if (pagerState.settledPage == pageIndex) {
+                exoPlayer.playWhenReady = true
+                exoPlayer.play()
+            } else {
+                exoPlayer.playWhenReady = false
+                exoPlayer.pause()
+            }
+        }
+
     }
 
     //加载缩略图
