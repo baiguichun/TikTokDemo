@@ -299,6 +299,5 @@ exoPlayer.trackSelector.parameters = DefaultTrackSelector.ParametersBuilder()
 ---
 
 **优化完成时间：** 2025-11-20  
-**优化版本：** v2.0  
-**维护者：** AI Assistant
+**优化版本：** v2.0
 
