@@ -2,6 +2,7 @@ package com.xiaobai.composable
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.util.Log
 import android.view.ViewGroup
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -24,8 +25,8 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -37,17 +38,17 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * 视频播放器
+ * 视频播放器组件 - 支持预加载、错误重试和后台恢复播放
  *
  * @param video 视频信息
  * @param pagerState PagerState 对象，用于获取当前页面状态
  * @param pageIndex 当前视频组件所在的页面索引
- * @param onSingleTap 单击事件回调，接收 ExoPlayer 对象作为参数
- * @param onDoubleTap 双击事件回调，接收 ExoPlayer 对象和点击位置偏移量 Offset 作为参数
- * @param onVideoDispose 视频组件销毁时回调，用于释放资源
- * @param onVideoGoBackground 视频组件进入后台时回调，用于暂停播放
+ * @param onSingleTap 单击事件回调
+ * @param onDoubleTap 双击事件回调
+ * @param onVideoDispose 视频销毁回调
+ * @param onVideoGoBackground 视频进入后台回调
+ * @param onPlaybackError 播放错误回调，参数为错误信息
  */
-
 @OptIn(ExperimentalFoundationApi::class)
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 @Composable
@@ -58,142 +59,303 @@ fun VideoPlayer(
     onSingleTap: (exoPlayer: ExoPlayer) -> Unit,
     onDoubleTap: (exoPlayer: ExoPlayer, offset: Offset) -> Unit,
     onVideoDispose: () -> Unit = {},
-    onVideoGoBackground: () -> Unit = {}
+    onVideoGoBackground: () -> Unit = {},
+    onPlaybackError: (error: String) -> Unit = {}
 ) {
-    //获取当前的 Context 对象
     val context = LocalContext.current
-    //缩略图信息
-    var thumbnail by remember {
-        mutableStateOf<Pair<Bitmap?, Boolean>>(Pair(null, true))  //bitmap, isShow
-    }
-    //是否已加载首帧
-    var isFirstFrameLoad = remember { false }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    
+    // 缩略图状态 - 使用 videoId 作为 key 确保每个视频独立状态
+    var showThumbnail by remember(video.videoId) { mutableStateOf(true) }
+    var thumbnailBitmap by remember(video.videoId) { mutableStateOf<Bitmap?>(null) }
+    
+    // 错误重试状态
+    var retryCount by remember(video.videoId) { mutableStateOf(0) }
+    var hasError by remember(video.videoId) { mutableStateOf(false) }
+    
+    // 性能监控：首帧加载时间
+    var loadStartTime by remember(video.videoId) { mutableStateOf(0L) }
 
-    //异步截取缩略图
-    LaunchedEffect(key1 = true) {
-        //IO线程获取视频缩略图
-        withContext(Dispatchers.IO) {
-            val bitmap = FileUtils.extractThumbnail(
-                context.assets.openFd("videos/${video.videoLink}"), 1
+    // 预加载范围：当前页 ±1
+    val isInPreloadRange = pagerState.settledPage in (pageIndex - 1)..(pageIndex + 1)
+    
+    // 不在预加载范围内，只显示缩略图
+    if (!isInPreloadRange) {
+        if (showThumbnail && thumbnailBitmap != null) {
+            AsyncImage(
+                model = thumbnailBitmap,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
             )
-            //切回主线程更新缩略图
-            withContext(Dispatchers.Main) {
-                thumbnail = thumbnail.copy(first = bitmap, second = thumbnail.second)
-            }
         }
+        return
     }
 
-
-    //预加载的页面范围：当前页面 - 1 到当前页面 + 1
-    if (pagerState.settledPage >= pageIndex - 1 && pagerState.settledPage <= pageIndex + 1) {
-        val exoPlayer = remember(video.videoLink) {
-            ExoPlayerPool.getPlayer(context, video.videoLink).apply {
-                //设置要播放的媒体资源
-                setMediaItem(MediaItem.fromUri(Uri.parse("asset:///videos/${video.videoLink}")))
-                //设置播放器在当前页面自动开始播放
-                playWhenReady = pagerState.settledPage == pageIndex
-                //预加载
-                prepare()
-                addListener(object : Player.Listener {
-                    //首帧渲染回调
-                    override fun onRenderedFirstFrame() {
-                        super.onRenderedFirstFrame()
-                        isFirstFrameLoad = true
-                        thumbnail = thumbnail.copy(second = false)
-                    }
-                })
-            }
-        }
-
-        //获取当前组件的生命周期所有者
-        val lifecycleOwner by rememberUpdatedState(LocalLifecycleOwner.current)
-        //监听当前组件的生命周期，确保视频播放器能够正确响应组件的生命周期变化，自动暂停和恢复播放，同时避免资源泄漏。
-        DisposableEffect(lifecycleOwner) {
-            val lifeCycleObserver = LifecycleEventObserver { _, event ->
-                when (event) {
-                    Lifecycle.Event.ON_STOP -> {
-                        exoPlayer.pause()
-                        onVideoGoBackground()
-                    }
-
-                    Lifecycle.Event.ON_START -> {
-                        if (pagerState.settledPage == pageIndex) {
-                            exoPlayer.play()
-                        }
-                    }
-
-                    else -> {}
-                }
-            }
-            lifecycleOwner.lifecycle.addObserver(lifeCycleObserver)
-            onDispose {
-                lifecycleOwner.lifecycle.removeObserver(lifeCycleObserver)
-            }
-        }
-
-        //创建播放器视图
-        val playerView = remember {
-            PlayerView(context).apply {
-                //设置播放器
-                player = exoPlayer
-                //禁用默认的播放控制器（如播放/暂停按钮）
-                useController = false
-                //设置缩放模式为填充并裁剪
-                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
-                //设置布局参数为全屏显
-                layoutParams = ViewGroup.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT
+    // 异步加载缩略图
+    LaunchedEffect(video.videoId) {
+        showThumbnail = true
+        thumbnailBitmap = null
+        try {
+            val bitmap = withContext(Dispatchers.IO) {
+                FileUtils.extractThumbnail(
+                    context.assets.openFd("videos/${video.videoLink}"),
+                    1
                 )
             }
-        }
-
-        //在 Compose 中嵌入 PlayerView 并处理用户交互手势
-        //管理视频播放器的生命周期，在适当时候释放资源
-        //处理单击和双击事件回调
-        //确保组件销毁时正确清理所有资源，避免内存泄漏
-        DisposableEffect(AndroidView(factory = {
-            playerView
-        }, modifier = Modifier.pointerInput(Unit) {//启用手势输入处理
-            //检测点击手势
-            detectTapGestures(onTap = {
-                //单击
-                onSingleTap(exoPlayer)
-            }, onDoubleTap = { offset ->
-                //双击
-                onDoubleTap(exoPlayer, offset)
-            })
-        }), effect = {
-            onDispose {
-                thumbnail = thumbnail.copy(second = true)
-                ExoPlayerPool.releasePlayer(video.videoLink, exoPlayer)
-                onVideoDispose()
-            }
-        })
-
-
-        // 在 ExoPlayer 初始化后添加页面状态监听
-        LaunchedEffect(pagerState.settledPage) {
-            if (pagerState.settledPage == pageIndex) {
-                exoPlayer.playWhenReady = true
-                exoPlayer.play()
+            if (bitmap != null) {
+                thumbnailBitmap = bitmap
             } else {
-                exoPlayer.playWhenReady = false
+                // 缩略图加载失败，尽快隐藏以显示视频
+                showThumbnail = false
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            // 加载失败时隐藏缩略图，让视频尽快显示
+            showThumbnail = false
+        }
+    }
+
+    // 获取或创建 ExoPlayer - 使用 videoId 作为 key
+    val exoPlayer = remember(video.videoId) {
+        loadStartTime = System.currentTimeMillis()
+        ExoPlayerPool.getPlayer(context, video.videoId).apply {
+            val currentUri = currentMediaItem?.localConfiguration?.uri?.toString()
+            val expectedUri = "asset:///videos/${video.videoLink}"
+            
+            // 只有当媒体项不匹配时才重新设置
+            if (currentUri != expectedUri) {
+                setMediaItem(MediaItem.fromUri(Uri.parse(expectedUri)))
+                prepare()
+            }
+            
+            // 根据当前页面决定是否播放
+            playWhenReady = pagerState.settledPage == pageIndex
+        }
+    }
+    
+    // 保持错误回调的最新引用
+    val onPlaybackErrorUpdated = rememberUpdatedState(onPlaybackError)
+
+    // 播放器事件监听 - 首帧渲染、错误处理、性能监控
+    DisposableEffect(video.videoId, exoPlayer) {
+        val listener = object : Player.Listener {
+            override fun onRenderedFirstFrame() {
+                // 隐藏缩略图
+                showThumbnail = false
+                hasError = false
+                
+                // 性能监控：记录首帧加载时间
+                if (loadStartTime > 0) {
+                    val loadTime = System.currentTimeMillis() - loadStartTime
+                    Log.d("VideoPlayer", "视频 ${video.videoId} 首帧加载耗时: ${loadTime}ms")
+                    loadStartTime = 0L
+                }
+            }
+            
+            override fun onPlayerError(error: PlaybackException) {
+                val errorMsg = "视频播放错误: ${error.errorCodeName} - ${error.message}"
+                Log.e("VideoPlayer", errorMsg, error)
+                
+                hasError = true
+                
+                // 尝试自动重试（最多3次）
+                if (retryCount < 3) {
+                    retryCount++
+                    Log.w("VideoPlayer", "尝试重试播放 (${retryCount}/3): ${video.videoId}")
+                    
+                    // 延迟重试，避免立即失败
+                    exoPlayer.prepare()
+                } else {
+                    // 超过重试次数，回调错误
+                    Log.e("VideoPlayer", "播放失败，已达最大重试次数: ${video.videoId}")
+                    onPlaybackErrorUpdated.value(errorMsg)
+                    showThumbnail = true // 显示缩略图作为兜底
+                }
+            }
+            
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                when (playbackState) {
+                    Player.STATE_BUFFERING -> {
+                        Log.d("VideoPlayer", "视频缓冲中: ${video.videoId}")
+                    }
+                    Player.STATE_READY -> {
+                        if (hasError) {
+                            // 错误恢复成功
+                            Log.i("VideoPlayer", "视频恢复播放成功: ${video.videoId}")
+                            hasError = false
+                            retryCount = 0
+                        }
+                    }
+                    Player.STATE_ENDED -> {
+                        Log.d("VideoPlayer", "视频播放结束: ${video.videoId}")
+                    }
+                    else -> Unit
+                }
+            }
+        }
+        exoPlayer.addListener(listener)
+        onDispose {
+            // 确保移除监听器，避免内存泄漏
+            exoPlayer.removeListener(listener)
+        }
+    }
+
+    // 创建 PlayerView - 使用 videoId 作为 key 确保重新创建时获得新的 Surface
+    val playerView = remember(video.videoId) {
+        PlayerView(context).apply {
+            useController = false
+            resizeMode = AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            layoutParams = ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            player = exoPlayer
+        }
+    }
+
+    // 保持回调的最新引用
+    val onVideoGoBackgroundUpdated = rememberUpdatedState(onVideoGoBackground)
+    val onVideoDisposeUpdated = rememberUpdatedState(onVideoDispose)
+
+    // 控制播放/暂停的状态
+    var shouldPlay by remember(video.videoId) { mutableStateOf(false) }
+    
+    // 生命周期监听 - 处理后台切换和 Surface 管理
+    DisposableEffect(lifecycleOwner, playerView, exoPlayer) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_PAUSE -> {
+                    // 进入后台时暂停播放
+                    Log.d("VideoPlayer", "ON_PAUSE - 暂停播放: ${video.videoId}")
+                    if (exoPlayer.isPlaying) {
+                        exoPlayer.pause()
+                    }
+                    shouldPlay = false
+                }
+                Lifecycle.Event.ON_STOP -> {
+                    // 完全停止时断开 Surface 连接，释放资源
+                    Log.d("VideoPlayer", "ON_STOP - 断开 Surface: ${video.videoId}")
+                    playerView.player = null
+                    onVideoGoBackgroundUpdated.value()
+                }
+                Lifecycle.Event.ON_START -> {
+                    // 从后台恢复时重新连接 Surface ⭐ 关键步骤
+                    Log.d("VideoPlayer", "ON_START - 重新连接 Surface: ${video.videoId}")
+                    if (playerView.player != exoPlayer) {
+                        playerView.player = exoPlayer
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    // 恢复前台时，如果是当前页则恢复播放
+                    Log.d("VideoPlayer", "ON_RESUME - 恢复前台: ${video.videoId}, 当前页: ${pagerState.settledPage == pageIndex}")
+                    if (pagerState.settledPage == pageIndex) {
+                        shouldPlay = true
+                    }
+                }
+                else -> {}
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
+
+    // 页面切换监听 - 控制播放/暂停
+    LaunchedEffect(pagerState.settledPage) {
+        val isCurrentPage = pagerState.settledPage == pageIndex
+        Log.d("VideoPlayer", "页面切换: ${video.videoId}, 是否当前页: $isCurrentPage")
+        
+        if (isCurrentPage) {
+            // 切换到当前页
+            val isResumed = lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+            if (isResumed) {
+                shouldPlay = true
+            }
+        } else {
+            // 切换到其他页，暂停播放
+            shouldPlay = false
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+            }
+            onVideoGoBackgroundUpdated.value()
+        }
+    }
+    
+    // 播放控制逻辑 - 根据 shouldPlay 状态控制播放
+    LaunchedEffect(shouldPlay) {
+        if (shouldPlay) {
+            Log.d("VideoPlayer", "准备播放: ${video.videoId}, 状态: ${exoPlayer.playbackState}")
+            when (exoPlayer.playbackState) {
+                Player.STATE_READY -> {
+                    if (!exoPlayer.isPlaying) {
+                        Log.d("VideoPlayer", "开始播放: ${video.videoId}")
+                        exoPlayer.play()
+                    }
+                }
+                Player.STATE_IDLE -> {
+                    Log.d("VideoPlayer", "准备播放器: ${video.videoId}")
+                    exoPlayer.prepare()
+                }
+                Player.STATE_ENDED -> {
+                    Log.d("VideoPlayer", "重新播放: ${video.videoId}")
+                    exoPlayer.seekTo(0)
+                    exoPlayer.play()
+                }
+                Player.STATE_BUFFERING -> {
+                    Log.d("VideoPlayer", "缓冲中: ${video.videoId}")
+                    // 缓冲完成后会自动播放
+                }
+            }
+        } else {
+            if (exoPlayer.isPlaying) {
+                Log.d("VideoPlayer", "暂停播放: ${video.videoId}")
                 exoPlayer.pause()
             }
         }
-
     }
 
-    //加载缩略图
-    if (thumbnail.second) {
+    // 渲染 PlayerView
+    AndroidView(
+        factory = { playerView },
+        update = { view ->
+            // 确保 player 始终正确绑定到 view，避免 Surface 丢失 ⭐ 关键步骤
+            // 只在不匹配时才重新绑定，避免不必要的 Surface 重建
+            if (view.player != exoPlayer) {
+                view.player = exoPlayer
+            }
+        },
+        modifier = Modifier
+            .fillMaxSize()
+            .pointerInput(video.videoId) {
+                detectTapGestures(
+                    onTap = { onSingleTap(exoPlayer) },
+                    onDoubleTap = { offset -> onDoubleTap(exoPlayer, offset) }
+                )
+            }
+    )
+
+    // 组件销毁时释放资源
+    DisposableEffect(video.videoId) {
+        onDispose {
+            showThumbnail = true
+            thumbnailBitmap = null
+            // 软释放播放器，保留在池中以供复用
+            ExoPlayerPool.softRelease(context, exoPlayer)
+            onVideoDisposeUpdated.value()
+        }
+    }
+
+    // 缩略图遮罩层
+    if (showThumbnail && thumbnailBitmap != null) {
         AsyncImage(
-            model = thumbnail.first,
+            model = thumbnailBitmap,
             contentDescription = null,
             modifier = Modifier.fillMaxSize(),
             contentScale = ContentScale.Crop
         )
     }
-
 }
 
 //by 委托确保当状态改变时能正确触发 Composable 重组
