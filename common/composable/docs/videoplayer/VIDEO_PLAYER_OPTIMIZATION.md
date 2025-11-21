@@ -1,5 +1,9 @@
 # 📹 VideoPlayer 深度优化报告
 
+> **版本**: v2.0  
+> **最后更新**: 2025-11-21  
+> **相关文档**: [ExoPlayerPool 技术文档](./EXOPLAYER_POOL_DOCUMENTATION.md)
+
 ## 🎯 优化目标
 
 1. ✅ 视频预加载能力（当前页 ±1）
@@ -291,13 +295,34 @@ exoPlayer.trackSelector.parameters = DefaultTrackSelector.ParametersBuilder()
 
 ---
 
-## 📚 相关文件
+## 📚 相关文档
 
-- `common/composable/src/main/java/com/xiaobai/composable/VideoPlayer.kt`
-- `common/composable/src/main/java/com/xiaobai/composable/ExoPlayerPool.kt`
+### 核心文档
+- 📘 [ExoPlayerPool 技术文档](../exoplayer-pool/EXOPLAYER_POOL_DOCUMENTATION.md) - 对象池完整技术文档
+- 🎬 [ExoPlayerPool 生命周期管理](../exoplayer-pool/EXOPLAYER_POOL_LIFECYCLE.md) - 生命周期和内存管理
+- 📊 [性能测试指南](../exoplayer-pool/PERFORMANCE_TESTING_GUIDE.md) - 如何测试和验证性能
+- 📈 [性能统计使用指南](../exoplayer-pool/PERFORMANCE_STATS_USAGE.md) - 性能数据的使用方法
+
+### 源代码文件
+- `../../src/main/java/com/xiaobai/composable/VideoPlayer.kt` - 视频播放器组件
+- `../../src/main/java/com/xiaobai/composable/ExoPlayerPool.kt` - ExoPlayer 对象池
+- `../../../../app/src/main/java/com/xiaobai/tiktokdemo/MainActivity.kt` - 主 Activity 生命周期管理
+- `../../../../app/src/main/java/com/xiaobai/tiktokdemo/MyApp.kt` - Application 级内存管理
 
 ---
 
-**优化完成时间：** 2025-11-20  
-**优化版本：** v2.0
+## 🔗 快速导航
+
+| 想了解... | 查看文档 |
+|----------|---------|
+| ExoPlayerPool 如何工作？ | [技术文档](../exoplayer-pool/EXOPLAYER_POOL_DOCUMENTATION.md) |
+| 何时释放播放器资源？ | [生命周期管理](../exoplayer-pool/EXOPLAYER_POOL_LIFECYCLE.md) |
+| 如何获取性能数据？ | [性能测试指南](../exoplayer-pool/PERFORMANCE_TESTING_GUIDE.md) |
+| 性能数据如何解读？ | [性能统计使用](../exoplayer-pool/PERFORMANCE_STATS_USAGE.md) |
+
+---
+
+**优化完成时间：** 2025-11-21  
+**优化版本：** v2.0  
+**文档更新：** 2025-11-21
 

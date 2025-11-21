@@ -19,6 +19,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onPause() {
+        super.onPause()
+        // 每次切换到后台时打印性能报告
+        ExoPlayerPool.logPerformanceReport()
+    }
+
     /**
      * Activity 完全销毁时释放所有播放器资源
      * 

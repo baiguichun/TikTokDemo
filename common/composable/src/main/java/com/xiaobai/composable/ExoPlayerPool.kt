@@ -28,6 +28,15 @@ object ExoPlayerPool {
     
     // 访问时间记录，用于 LRU 淘汰
     private val accessTimeMap = mutableMapOf<String, Long>()
+    
+    // ========== 性能统计数据 ==========
+    private var totalGetPlayerCalls = 0          // getPlayer 调用总次数
+    private var playerCreatedCount = 0           // 创建播放器次数
+    private var playerReusedCount = 0            // 复用播放器次数
+    private var playerReleasedCount = 0          // 释放播放器次数
+    private var maxActivePlayersEver = 0         // 历史最大活跃播放器数
+    private var maxIdlePlayersEver = 0           // 历史最大空闲播放器数
+    private var sessionStartTime = System.currentTimeMillis() // 会话开始时间
 
     /**
      * 获取播放器实例
@@ -46,11 +55,15 @@ object ExoPlayerPool {
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
     fun getPlayer(context: Context, videoId: String): ExoPlayer {
         return synchronized(this) {
+            // 统计：调用次数
+            totalGetPlayerCalls++
+            
             // 记录访问时间
             accessTimeMap[videoId] = System.currentTimeMillis()
             
             // 如果该视频已有活跃播放器，直接返回
             activePlayerMap[videoId]?.let {
+                playerReusedCount++  // 统计：复用次数
                 Log.d(TAG, "复用已存在的播放器: $videoId")
                 return@synchronized it
             }
@@ -60,6 +73,7 @@ object ExoPlayerPool {
             
             // 从空闲池获取或创建新播放器
             val player = if (idlePlayers.isNotEmpty()) {
+                playerReusedCount++  // 统计：复用次数
                 Log.d(TAG, "从空闲池获取播放器: $videoId (池大小: ${idlePlayers.size})")
                 val (idlePlayer, _) = idlePlayers.removeFirst()
                 idlePlayer.apply {
@@ -70,6 +84,7 @@ object ExoPlayerPool {
                     }
                 }
             } else {
+                playerCreatedCount++  // 统计：创建次数
                 Log.d(TAG, "创建新播放器: $videoId (活跃数: ${activePlayerMap.size})")
                 ExoPlayer.Builder(context).build().apply {
                     videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
@@ -79,6 +94,9 @@ object ExoPlayerPool {
             
             // 添加到活跃映射
             activePlayerMap[videoId] = player
+            
+            // 统计：更新峰值
+            maxActivePlayersEver = maxOf(maxActivePlayersEver, activePlayerMap.size)
             
             // 如果总数超限，淘汰最久未访问的
             evictIfNeeded()
@@ -126,8 +144,10 @@ object ExoPlayerPool {
             val totalPlayers = activePlayerMap.size + idlePlayers.size
             if (totalPlayers < MAX_POOL_SIZE) {
                 idlePlayers.add(Pair(player, System.currentTimeMillis()))
+                maxIdlePlayersEver = maxOf(maxIdlePlayersEver, idlePlayers.size)  // 统计：更新峰值
                 Log.d(TAG, "播放器移入空闲池 (池大小: ${idlePlayers.size}, 总计: ${totalPlayers + 1}/$MAX_POOL_SIZE)")
             } else {
+                playerReleasedCount++  // 统计：释放次数
                 Log.d(TAG, "池已满，释放播放器 (总计: $totalPlayers/$MAX_POOL_SIZE)")
                 player.release()
             }
@@ -208,4 +228,190 @@ object ExoPlayerPool {
             "总计: ${activePlayerMap.size + idlePlayers.size}/$MAX_POOL_SIZE"
         }
     }
+    
+    /**
+     * 获取性能统计数据
+     */
+    fun getPerformanceStats(): PerformanceStats {
+        return synchronized(this) {
+            val sessionDurationMin = (System.currentTimeMillis() - sessionStartTime) / 60000.0
+            val reuseRate = if (totalGetPlayerCalls > 0) {
+                (playerReusedCount.toFloat() / totalGetPlayerCalls * 100)
+            } else 0f
+            
+            PerformanceStats(
+                totalGetPlayerCalls = totalGetPlayerCalls,
+                playerCreatedCount = playerCreatedCount,
+                playerReusedCount = playerReusedCount,
+                playerReleasedCount = playerReleasedCount,
+                currentActiveCount = activePlayerMap.size,
+                currentIdleCount = idlePlayers.size,
+                maxActivePlayersEver = maxActivePlayersEver,
+                maxIdlePlayersEver = maxIdlePlayersEver,
+                reuseRate = reuseRate,
+                sessionDurationMinutes = sessionDurationMin
+            )
+        }
+    }
+    
+    /**
+     * 打印性能统计报告
+     */
+    fun logPerformanceReport() {
+        val stats = getPerformanceStats()
+        
+        // 计算内存优化效果
+        val wouldUseMemoryMB = if (stats.totalGetPlayerCalls > 0) stats.totalGetPlayerCalls * 8 else 0
+        val actualUsingMemoryMB = (stats.currentActiveCount + stats.currentIdleCount) * 8
+        val memorySavedMB = wouldUseMemoryMB - actualUsingMemoryMB
+        val memorySavedPercent = if (wouldUseMemoryMB > 0) {
+            (memorySavedMB.toFloat() / wouldUseMemoryMB * 100)
+        } else 0f
+        
+        // 计算创建次数减少比例
+        val creationReduction = if (stats.totalGetPlayerCalls > 0) {
+            (1 - stats.playerCreatedCount.toFloat() / stats.totalGetPlayerCalls) * 100
+        } else 0f
+        
+        Log.i(TAG, """
+            ========== ExoPlayerPool 性能报告 ==========
+            会话时长: ${"%.1f".format(stats.sessionDurationMinutes)} 分钟
+            
+            【调用统计】
+            getPlayer 调用次数: ${stats.totalGetPlayerCalls}
+            创建播放器次数: ${stats.playerCreatedCount}
+            复用播放器次数: ${stats.playerReusedCount}
+            释放播放器次数: ${stats.playerReleasedCount}
+            复用率: ${"%.1f".format(stats.reuseRate)}%
+            
+            【当前状态】
+            活跃播放器: ${stats.currentActiveCount}
+            空闲播放器: ${stats.currentIdleCount}
+            总计: ${stats.currentActiveCount + stats.currentIdleCount}/$MAX_POOL_SIZE
+            
+            【历史峰值】
+            最大活跃数: ${stats.maxActivePlayersEver}
+            最大空闲数: ${stats.maxIdlePlayersEver}
+            
+            【性能优化效果】
+            创建次数减少: ${"%.1f".format(creationReduction)}% (${stats.totalGetPlayerCalls - stats.playerCreatedCount}/${stats.totalGetPlayerCalls})
+            无优化内存占用: ${wouldUseMemoryMB}MB (${stats.totalGetPlayerCalls}个播放器)
+            实际内存占用: ${actualUsingMemoryMB}MB (${stats.currentActiveCount + stats.currentIdleCount}个播放器)
+            节省内存: ${memorySavedMB}MB (${"%.1f".format(memorySavedPercent)}%)
+            
+            【池效率分析】
+            池利用率: ${"%.1f".format((stats.currentActiveCount + stats.currentIdleCount).toFloat() / MAX_POOL_SIZE * 100)}%
+            峰值利用率: ${"%.1f".format(maxOf(stats.maxActivePlayersEver, stats.maxIdlePlayersEver).toFloat() / MAX_POOL_SIZE * 100)}%
+            ==========================================
+        """.trimIndent())
+    }
+    
+    /**
+     * 重置性能统计（用于测试）
+     */
+    fun resetStats() {
+        synchronized(this) {
+            totalGetPlayerCalls = 0
+            playerCreatedCount = 0
+            playerReusedCount = 0
+            playerReleasedCount = 0
+            maxActivePlayersEver = 0
+            maxIdlePlayersEver = 0
+            sessionStartTime = System.currentTimeMillis()
+            Log.i(TAG, "性能统计已重置")
+        }
+    }
+    
+    /**
+     * 性能统计数据类
+     */
+    data class PerformanceStats(
+        val totalGetPlayerCalls: Int,           // getPlayer 调用总次数
+        val playerCreatedCount: Int,            // 创建播放器次数
+        val playerReusedCount: Int,             // 复用播放器次数
+        val playerReleasedCount: Int,           // 释放播放器次数
+        val currentActiveCount: Int,            // 当前活跃播放器数
+        val currentIdleCount: Int,              // 当前空闲播放器数
+        val maxActivePlayersEver: Int,          // 历史最大活跃数
+        val maxIdlePlayersEver: Int,            // 历史最大空闲数
+        val reuseRate: Float,                   // 复用率 (%)
+        val sessionDurationMinutes: Double      // 会话时长（分钟）
+    ) {
+        /**
+         * 计算内存优化效果
+         */
+        fun getMemoryOptimization(): MemoryOptimization {
+            val wouldUseMemoryMB = if (totalGetPlayerCalls > 0) totalGetPlayerCalls * 8 else 0
+            val actualUsingMemoryMB = (currentActiveCount + currentIdleCount) * 8
+            val memorySavedMB = wouldUseMemoryMB - actualUsingMemoryMB
+            val memorySavedPercent = if (wouldUseMemoryMB > 0) {
+                (memorySavedMB.toFloat() / wouldUseMemoryMB * 100)
+            } else 0f
+            
+            return MemoryOptimization(
+                wouldUseMemoryMB = wouldUseMemoryMB,
+                actualUsingMemoryMB = actualUsingMemoryMB,
+                memorySavedMB = memorySavedMB,
+                memorySavedPercent = memorySavedPercent
+            )
+        }
+        
+        /**
+         * 计算创建次数优化效果
+         */
+        fun getCreationOptimization(): CreationOptimization {
+            val reductionCount = totalGetPlayerCalls - playerCreatedCount
+            val reductionPercent = if (totalGetPlayerCalls > 0) {
+                (1 - playerCreatedCount.toFloat() / totalGetPlayerCalls) * 100
+            } else 0f
+            
+            return CreationOptimization(
+                totalCalls = totalGetPlayerCalls,
+                actualCreations = playerCreatedCount,
+                reductionCount = reductionCount,
+                reductionPercent = reductionPercent
+            )
+        }
+        
+        /**
+         * 计算池利用率
+         */
+        fun getPoolUtilization(): PoolUtilization {
+            val currentUtilization = (currentActiveCount + currentIdleCount).toFloat() / 5 * 100
+            val peakUtilization = maxOf(maxActivePlayersEver, maxIdlePlayersEver).toFloat() / 5 * 100
+            
+            return PoolUtilization(
+                currentUtilization = currentUtilization,
+                peakUtilization = peakUtilization
+            )
+        }
+    }
+    
+    /**
+     * 内存优化数据
+     */
+    data class MemoryOptimization(
+        val wouldUseMemoryMB: Int,      // 无优化时的内存占用
+        val actualUsingMemoryMB: Int,   // 实际内存占用
+        val memorySavedMB: Int,         // 节省的内存
+        val memorySavedPercent: Float   // 节省比例
+    )
+    
+    /**
+     * 创建次数优化数据
+     */
+    data class CreationOptimization(
+        val totalCalls: Int,            // 总调用次数
+        val actualCreations: Int,       // 实际创建次数
+        val reductionCount: Int,        // 减少的创建次数
+        val reductionPercent: Float     // 减少比例
+    )
+    
+    /**
+     * 池利用率数据
+     */
+    data class PoolUtilization(
+        val currentUtilization: Float,  // 当前利用率
+        val peakUtilization: Float      // 峰值利用率
+    )
 }

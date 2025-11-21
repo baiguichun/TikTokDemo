@@ -1,5 +1,9 @@
 # 🎬 ExoPlayerPool 生命周期管理指南
 
+> **版本**: v2.0  
+> **最后更新**: 2025-11-21  
+> **相关文档**: [ExoPlayerPool 技术文档](./EXOPLAYER_POOL_DOCUMENTATION.md)
+
 ## 📍 `releaseAll()` 调用位置说明
 
 ### **方案 1：MainActivity.onDestroy() ⭐ 推荐**
@@ -370,6 +374,32 @@ override fun onDestroy() {
 
 ---
 
-**更新时间：** 2025-11-20  
-**版本：** v1.0
+## 📚 相关文档
+
+### 深入学习
+- 📘 [ExoPlayerPool 技术文档](./EXOPLAYER_POOL_DOCUMENTATION.md) - 完整的技术文档和 API 说明
+- 📹 [VideoPlayer 优化报告](../videoplayer/VIDEO_PLAYER_OPTIMIZATION.md) - VideoPlayer 组件的优化细节
+- 📊 [性能测试指南](./PERFORMANCE_TESTING_GUIDE.md) - 如何测试和验证性能
+- 📈 [性能统计使用指南](./PERFORMANCE_STATS_USAGE.md) - 性能数据的使用方法
+
+### 实现文件
+- `../../src/main/java/com/xiaobai/composable/ExoPlayerPool.kt` - 对象池实现
+- `../../../../app/src/main/java/com/xiaobai/tiktokdemo/MainActivity.kt` - Activity 生命周期管理
+- `../../../../app/src/main/java/com/xiaobai/tiktokdemo/MyApp.kt` - Application 内存管理
+
+---
+
+## 🔗 快速导航
+
+| 想了解... | 查看文档 |
+|----------|---------|
+| ExoPlayerPool 的工作原理？ | [技术文档 - 工作原理](./EXOPLAYER_POOL_DOCUMENTATION.md#⚙️-工作原理) |
+| 如何监控性能？ | [性能测试指南](./PERFORMANCE_TESTING_GUIDE.md) |
+| 性能指标如何解读？ | [性能统计使用](./PERFORMANCE_STATS_USAGE.md#📊-数据解读指南) |
+| 如何优化 VideoPlayer？ | [VideoPlayer 优化](../videoplayer/VIDEO_PLAYER_OPTIMIZATION.md) |
+
+---
+
+**更新时间：** 2025-11-21  
+**版本：** v2.0
 
