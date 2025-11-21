@@ -1272,7 +1272,7 @@ ExoPlayer.Builder(context).build().apply {
 }
 ```
 
-**效果**: 首帧时间保持在 30-50ms
+**效果**: 首帧时间保持在 150-220ms
 
 ---
 
@@ -1296,7 +1296,7 @@ val onPlaybackErrorUpdated = rememberUpdatedState(onPlaybackError)
 | **单个播放器** | ~80MB | ~55MB | ↓ 31% |
 | **3 个播放器** | ~240MB | ~165MB | ↓ 31% |
 | **总内存占用** | ~320MB | ~280MB | ↓ 13% |
-| **首帧时间** | 30-50ms | 30-50ms | → 保持 |
+| **首帧时间** | 150-220ms | 150-220ms | → 保持 |
 | **用户体验** | 流畅 | 流畅 | → 保持 |
 
 ### 优化策略

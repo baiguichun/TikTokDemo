@@ -171,7 +171,7 @@ fun HomeScreen(viewModel: HomeViewModel) {
 | **ExoPlayer 内存** | ~165MB | 3 个播放器实例 |
 | **Java 内存** | ~33MB | 应用基础内存 |
 | **Native 内存** | ~165MB | ExoPlayer 解码器 |
-| **首帧加载时间** | 30-50ms | 秒开体验 |
+| **首帧加载时间** | 150-220ms | 流畅体验 |
 
 ### 优化效果
 
