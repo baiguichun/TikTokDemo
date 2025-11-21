@@ -25,9 +25,11 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
@@ -79,16 +81,8 @@ fun VideoPlayer(
     // 预加载范围：当前页 ±1
     val isInPreloadRange = pagerState.settledPage in (pageIndex - 1)..(pageIndex + 1)
     
-    // 不在预加载范围内，只显示缩略图
+    // 不在预加载范围内，直接返回（不渲染任何内容）
     if (!isInPreloadRange) {
-        if (showThumbnail && thumbnailBitmap != null) {
-            AsyncImage(
-                model = thumbnailBitmap,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-        }
         return
     }
 
@@ -116,22 +110,38 @@ fun VideoPlayer(
         }
     }
 
-    // 获取或创建 ExoPlayer - 使用 videoId 作为 key
+    // 🔥 每个视频组件独立创建并管理自己的播放器（纯 Compose 方式）
     val exoPlayer = remember(video.videoId) {
         loadStartTime = System.currentTimeMillis()
-        ExoPlayerPool.getPlayer(context, video.videoId).apply {
-            val currentUri = currentMediaItem?.localConfiguration?.uri?.toString()
-            val expectedUri = "asset:///videos/${video.videoLink}"
-            
-            // 只有当媒体项不匹配时才重新设置
-            if (currentUri != expectedUri) {
-                setMediaItem(MediaItem.fromUri(Uri.parse(expectedUri)))
+        
+        // 创建播放器 - 短视频优化配置
+        ExoPlayer.Builder(context)
+            .setLoadControl(
+                DefaultLoadControl.Builder()
+                    // 短视频缓冲优化：减少缓冲区，大幅降低内存占用
+                    .setBufferDurationsMs(
+                        1000,   // minBufferMs: 最小缓冲 1 秒（默认 50 秒）
+                        3000,   // maxBufferMs: 最大缓冲 3 秒（默认 200 秒）
+                        500,    // bufferForPlaybackMs: 500ms 可播放（默认 2.5 秒）
+                        1000    // bufferForPlaybackAfterRebufferMs: 重新缓冲 1 秒（默认 5 秒）
+                    )
+                    .build()
+            )
+            .build()
+            .apply {
+                videoScalingMode = C.VIDEO_SCALING_MODE_SCALE_TO_FIT
+                repeatMode = Player.REPEAT_MODE_ONE
+                
+                // 设置媒体项
+                val mediaItem = MediaItem.fromUri(Uri.parse("asset:///videos/${video.videoLink}"))
+                setMediaItem(mediaItem)
                 prepare()
+                
+                // 根据当前页面决定是否播放
+                playWhenReady = pagerState.settledPage == pageIndex
+                
+                Log.d("VideoPlayer", "✓ 创建播放器（优化配置）: ${video.videoId}")
             }
-            
-            // 根据当前页面决定是否播放
-            playWhenReady = pagerState.settledPage == pageIndex
-        }
     }
     
     // 保持错误回调的最新引用
@@ -144,6 +154,10 @@ fun VideoPlayer(
                 // 隐藏缩略图
                 showThumbnail = false
                 hasError = false
+                
+                // 内存优化：主动回收 Bitmap，立即释放内存
+                thumbnailBitmap?.recycle()
+                thumbnailBitmap = null
                 
                 // 性能监控：记录首帧加载时间
                 if (loadStartTime > 0) {
@@ -336,13 +350,16 @@ fun VideoPlayer(
             }
     )
 
-    // 组件销毁时释放资源
+    // 🔥 组件销毁时自动释放播放器（Compose 自动生命周期管理）
     DisposableEffect(video.videoId) {
         onDispose {
             showThumbnail = true
             thumbnailBitmap = null
-            // 软释放播放器，保留在池中以供复用
-            ExoPlayerPool.softRelease(context, exoPlayer)
+            
+            // 直接释放播放器
+            exoPlayer.release()
+            Log.d("VideoPlayer", "✗ 释放播放器: ${video.videoId}")
+            
             onVideoDisposeUpdated.value()
         }
     }
